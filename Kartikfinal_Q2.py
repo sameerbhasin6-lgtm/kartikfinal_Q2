@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from scipy.optimize import differential_evolution
 from io import StringIO
+import plotly.graph_objects as go
+import plotly.express as px
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
