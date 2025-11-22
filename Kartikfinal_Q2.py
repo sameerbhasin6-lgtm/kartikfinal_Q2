@@ -5,191 +5,129 @@ from scipy.optimize import differential_evolution
 from io import StringIO
 import plotly.graph_objects as go
 import plotly.express as px
+import os
+import re
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Dynamic Pricing Optimizer",
-    page_icon="📈",
+    page_title="Dynamic Pricing Strategy Engine",
+    page_icon="🚀",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    /* Main container styling */
-    .main { background-color: #f8fafc; }
-    
-    /* Metric Cards */
-    .metric-box {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        border-left: 5px solid #3b82f6;
-    }
-    .metric-label { font-size: 0.9rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
-    .metric-value { font-size: 2rem; color: #1e293b; font-weight: 700; }
-    .metric-delta { font-size: 0.9rem; font-weight: 600; }
-    .positive { color: #16a34a; }
-    
-    /* Insight Box */
-    .insight-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 20px;
-        height: 100%;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    .insight-header { font-size: 1.1rem; font-weight: bold; color: #1e293b; margin-bottom: 15px; display: flex; align-items: center; }
-    .recommendation {
-        background: #f8fafc;
-        border-left: 4px solid #6366f1;
-        padding: 12px;
-        margin-bottom: 12px;
-        border-radius: 0 8px 8px 0;
-    }
-    
-    /* Pricing Cards */
-    .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
-    .price-card {
-        background: white;
-        padding: 15px;
-        border-radius: 10px;
-        text-align: center;
-        border: 1px solid #e2e8f0;
-        transition: transform 0.2s;
-    }
+    .main { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
+    .metric-container { background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border-left: 5px solid #3b82f6; text-align: center; }
+    .metric-label { font-size: 0.8rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-value { font-size: 2rem; font-weight: 800; color: #1e293b; margin: 5px 0; }
+    .metric-sub { font-size: 0.85rem; color: #16a34a; font-weight: 600; }
+    .insight-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; height: 100%; }
+    .recommendation-box { background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 15px; margin-bottom: 15px; border-radius: 0 8px 8px 0; font-size: 0.9rem; color: #334155; }
+    .price-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 15px; text-align: center; transition: transform 0.2s; }
     .price-card:hover { transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-    .price-title { font-size: 0.8rem; color: #64748b; font-weight: bold; text-transform: uppercase; height: 40px; display: flex; align-items: center; justify-content: center; }
-    .price-tag { font-size: 1.2rem; font-weight: bold; color: #0f172a; margin: 5px 0; }
-    .bundle-highlight {
-        background: linear-gradient(135deg, #4f46e5, #3b82f6);
-        color: white !important;
-        border: none;
-    }
-    .bundle-highlight .price-title, .bundle-highlight .price-tag { color: white !important; }
+    .price-title { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; height: 35px; display: flex; align-items: center; justify-content: center; }
+    .price-val { font-size: 1.25rem; font-weight: 800; color: #0f172a; }
+    .bundle-highlight { background: linear-gradient(135deg, #2563eb, #1d4ed8); border: none; color: white; transform: scale(1.05); box-shadow: 0 8px 15px -3px rgba(37, 99, 235, 0.4); }
+    .bundle-highlight .price-title { color: #bfdbfe; }
+    .bundle-highlight .price-val { color: white; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. DATA LOADING ---
+# --- 1. ROBUST DATA LOADING ---
+def robust_numeric_converter(series):
+    """
+    Forces a column to numeric, handling currencies/commas.
+    Returns the series if it contains mostly numbers, else None.
+    """
+    # Convert to string, remove currency symbols/commas
+    clean = series.astype(str).str.replace(r'[^\d.-]', '', regex=True)
+    
+    # Coerce to numeric (errors become NaN)
+    numeric = pd.to_numeric(clean, errors='coerce')
+    
+    # Check if the column is actually useful (has > 20% valid numbers)
+    # This is loose to allow for messy data but strict enough to drop "Names"
+    valid_count = numeric.notna().sum()
+    if valid_count / len(series) > 0.2:
+        return numeric
+    return None
+
 @st.cache_data
-def load_data(file):
-    if file:
-        return pd.read_csv(file)
-    # Default Data (Samsung)
-    csv_content = """Samsung_Smartphone,Samsung_Smart_TV_43in,Samsung_Smart_Watch,Samsung_Washing_Machine,Samsung_AC_1.5_Tonne
-46371,38390,10695,22633,46883
-95402,37411,5179,28348,54920
-32191,55430,19183,29138,60153
-114921,47641,28643,48809,56291
-46083,50986,13906,50804,49542
-64405,55260,12398,29402,26565
-103194,49171,17219,43524,38325
-23787,58884,30076,46407,41890
-93946,41870,17478,33432,46575
-58329,62791,23984,47980,45185
-68996,32708,17702,56427,49056
-32188,52276,15916,53980,46529
-55920,64810,17258,42960,54298
-66398,39468,25363,33289,32665
-50826,42141,24927,29293,67821
-32615,41404,17073,57167,58115
-38382,49750,13900,30765,44412
-84204,44885,10859,34863,46128
-20665,32725,3779,30417,64284
-69383,64890,10091,36191,62398
-117683,37521,11550,24967,46031
-14969,48720,23064,45343,33189
-33053,50829,27022,36404,66709
-66450,27818,24401,34430,52347
-24070,31982,23999,33078,53377
-59917,72289,37707,38257,42576
-67266,53457,34118,44263,57226
-59797,27095,13925,49530,50043
-45257,59211,11026,46647,48000
-68386,47874,11250,35024,54738
-60248,30620,30173,46334,45454
-36176,54107,9741,36971,46979
-57996,47575,15294,39824,52310
-87763,37532,19157,40865,51989
-65853,63974,21090,33966,64907
-51822,40906,20662,35954,50164
-42733,40659,25943,41403,44002
-26835,40227,20095,31647,42982
-38412,57901,28261,43126,49510
-16075,55157,9129,32851,36597
-109151,65738,28578,38405,50746
-37095,38547,20525,46484,45953
-79637,58819,12948,19569,44899
-33590,50056,35462,29707,39715
-40600,41517,32533,37780,48608
-48451,27292,28054,24772,31506
-42894,60501,30957,28602,51197
-77875,39015,16093,43198,42923
-100704,52191,13057,19820,60756
-86872,49220,12011,39054,49334
-32512,22583,29193,20544,55947
-75670,76553,27336,25214,58427
-32095,60253,35800,33743,59563
-92391,47160,28152,53704,59209
-54864,54090,21559,37396,40926
-43581,46846,10948,31763,43472
-32763,56840,11555,34240,53787
-16242,34194,17935,37974,49593
-38604,45902,25344,39308,51248
-92493,42434,11771,30527,52969
-77761,46314,31159,28325,36337
-103696,46029,22897,36171,38760
-28234,34650,14775,40011,51945
-60093,72973,29720,45635,51637
-39130,24820,20731,38596,57181
-56579,23887,24289,41398,53398
-42669,43667,16157,35905,40285
-40592,51765,16315,37921,33878
-58761,36415,5366,39748,45973
-34595,48690,19325,29584,45437
-51650,55871,25125,51387,55531
-64566,31878,34629,32629,52805
-30566,74280,30015,38911,59275
-95286,42473,9214,37775,48817
-54048,52596,35755,47155,43021
-80148,32887,11146,25111,48817
-64812,55300,7272,48587,40570
-69482,61695,24760,26104,33252
-70019,32566,30669,26405,48709
-86847,33740,33184,47551,46570
-61688,40532,27276,30211,31021
-40302,24231,12538,39101,54161
-28121,74587,11269,35435,52109
-61135,50958,8116,51400,34111
-24797,51293,20335,44342,53845
-38218,70716,18221,32363,34652
-24153,61218,9965,45512,49132
-56993,60249,17750,29255,51561
-33002,42566,19994,39203,48693
-61447,42411,23991,43282,54922
-77100,40919,16721,41725,45826
-80408,42804,14889,40347,40478
-42051,43542,22414,46169,48392
-56998,34491,22909,37655,44621
-57987,43106,13957,51021,38045
-51892,45914,5966,26416,48021
-64909,41541,32912,32892,40053
-36330,35748,24954,44375,48001
-106484,43666,12449,31650,50849
-27990,46983,19956,34966,55999"""
-    return pd.read_csv(StringIO(csv_content))
+def load_data(uploaded_file):
+    """
+    Loads and cleans data, keeping only valid price columns.
+    """
+    df = None
+    if uploaded_file is not None:
+        try:
+            filename = uploaded_file.name.lower()
+            if filename.endswith('.csv'):
+                try:
+                    df = pd.read_csv(uploaded_file)
+                except UnicodeDecodeError:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file, encoding='latin1')
+            elif filename.endswith(('.xls', '.xlsx')):
+                df = pd.read_excel(uploaded_file)
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
+            return None
+    else:
+        # Default Data (Dheeraj.csv content embedded)
+        data = """Samsung_Smartphone,Samsung_Smart_TV_43in,Samsung_Smart_Watch,Samsung_Washing_Machine,Samsung_AC_1.5_Tonne
+66262,25237,20607,37091,56028
+101376,58390,33686,28562,52459
+45595,35585,16770,23890,51438
+48871,50971,38126,42669,47137
+79338,54120,11850,33593,38939
+54050,40470,26266,43422,51944
+71852,49926,31845,36007,46720
+51046,38983,23013,45371,43537
+36667,69382,9967,42884,52488
+72648,62863,15041,43710,45636
+30804,40786,9167,34657,38761
+35599,48543,20830,30918,42012
+61681,39124,30525,35927,51014
+88856,63293,21892,41002,39001"""
+        df = pd.read_csv(StringIO(data))
 
-# --- 2. OPTIMIZATION ENGINE ---
+    if df is not None:
+        # 1. Create a new clean dataframe
+        clean_df = pd.DataFrame()
+        
+        for col in df.columns:
+            # Try to convert each column
+            numeric_col = robust_numeric_converter(df[col])
+            if numeric_col is not None:
+                clean_df[col] = numeric_col
+        
+        # 2. Final Cleanup
+        # Remove rows that are completely empty (all NaNs)
+        clean_df = clean_df.dropna(how='all')
+        
+        # Fill remaining NaNs with 0 (assuming 0 WTP if blank) to avoid dropping useful rows
+        clean_df = clean_df.fillna(0)
+        
+        if clean_df.empty or clean_df.shape[1] == 0:
+            st.error("❌ No valid numeric data found. Please check your file columns.")
+            return None
+            
+        return clean_df
+        
+    return None
 
+# --- 2. OPTIMIZATION LOGIC ---
 def calculate_baseline(df, products):
-    """Calculates revenue if we only use separate pricing (no bundle)."""
     total_rev = 0
     for prod in products:
         wtp = df[prod].values
         candidates = np.unique(wtp)
+        candidates = candidates[candidates > 0] # Ignore 0s
+        if len(candidates) == 0: continue
+        
         best_r = 0
         for p in candidates:
             r = p * np.sum(wtp >= p)
@@ -198,11 +136,7 @@ def calculate_baseline(df, products):
     return total_rev
 
 @st.cache_data(show_spinner=False)
-def solve_pricing(df, products):
-    """
-    Simulates Excel Evolutionary Solver using Differential Evolution.
-    Finds optimal [P1, P2, ..., Pn, BundlePrice].
-    """
+def run_solver(df, products):
     wtp_matrix = df[products].values
     bundle_sum_values = df[products].sum(axis=1).values
     n_prods = len(products)
@@ -210,43 +144,38 @@ def solve_pricing(df, products):
     def objective(prices):
         indiv_prices = np.array(prices[:n_prods])
         bundle_price = prices[n_prods]
-
-        # Logic: Customer chooses Max Surplus
+        
         surplus_indiv = np.sum(np.maximum(wtp_matrix - indiv_prices, 0), axis=1)
         surplus_bundle = bundle_sum_values - bundle_price
         
-        # Vectorized Choice
         buy_bundle = (surplus_bundle >= surplus_indiv) & (surplus_bundle >= 0)
         buy_indiv = (~buy_bundle) & (surplus_indiv > 0)
         
-        # Revenue Calculation
         rev_bundle = np.sum(buy_bundle) * bundle_price
-        
-        # For indiv revenue, we must check which items they bought
-        # Mask of items bought by indiv buyers
         items_bought_mask = (wtp_matrix >= indiv_prices) & buy_indiv[:, None]
         rev_indiv = np.sum(items_bought_mask * indiv_prices)
 
-        return -(rev_bundle + rev_indiv) # Minimize negative revenue
+        return -(rev_bundle + rev_indiv)
 
-    # Set Bounds
+    # Bounds
     bounds = []
     for i in range(n_prods):
-        max_w = np.max(wtp_matrix[:, i])
-        bounds.append((0, max_w * 1.5)) # Allow anchor prices higher than WTP
-    bounds.append((0, np.max(bundle_sum_values)))
+        max_val = np.max(wtp_matrix[:, i])
+        upper = max_val * 1.5 if max_val > 0 else 1000
+        bounds.append((0, upper))
+    
+    max_bundle = np.max(bundle_sum_values)
+    bounds.append((0, max_bundle if max_bundle > 0 else 1000))
 
     res = differential_evolution(objective, bounds, strategy='best1bin', maxiter=50, popsize=15, tol=0.01, seed=42)
     return res.x, -res.fun
 
-def get_customer_breakdown(df, products, optimal_prices):
-    """Generates the customer-wise decision table."""
+def get_customer_details(df, products, opt_prices):
     wtp_matrix = df[products].values
     bundle_sum_values = df[products].sum(axis=1).values
     n_prods = len(products)
-    
-    indiv_prices = optimal_prices[:n_prods]
-    bundle_price = optimal_prices[n_prods]
+    indiv_prices = opt_prices[:n_prods]
+    bundle_price = opt_prices[n_prods]
     
     rows = []
     for i in range(len(df)):
@@ -262,202 +191,189 @@ def get_customer_breakdown(df, products, optimal_prices):
             decision = "Bundle"
             revenue = bundle_price
             surplus = s_bundle
-            items = "All Items"
+            items = "Full Bundle"
         elif s_indiv > 0:
             decision = "Individual"
             surplus = s_indiv
-            bought_indices = np.where(wtp_matrix[i] >= indiv_prices)[0]
-            items = ", ".join([products[k] for k in bought_indices])
-            revenue = np.sum(indiv_prices[bought_indices])
+            bought_idx = np.where(wtp_matrix[i] >= indiv_prices)[0]
+            # Clean item names for display
+            clean_names = [str(products[k]).replace("Samsung_", "") for k in bought_idx]
+            items = ", ".join(clean_names)
+            revenue = np.sum(indiv_prices[bought_idx])
             
         rows.append({
-            "Customer ID": i + 1,
+            "ID": i + 1,
             "Decision": decision,
             "Items Bought": items,
             "Revenue": revenue,
-            "Consumer Surplus": surplus
+            "Surplus": surplus
         })
     return pd.DataFrame(rows)
 
-def generate_demand_curve(df, products, optimal_prices):
-    """Generates demand curve data by varying bundle price while keeping indiv prices fixed."""
+def generate_demand_data(df, products, opt_prices):
     wtp_matrix = df[products].values
     bundle_sum_values = df[products].sum(axis=1).values
     n_prods = len(products)
-    indiv_prices = optimal_prices[:n_prods]
+    indiv_prices = opt_prices[:n_prods]
     
-    # Sweep bundle price from 0 to Max Bundle Sum
-    max_val = np.max(bundle_sum_values)
-    price_points = np.linspace(0, max_val, 100)
+    max_val = np.max(bundle_sum_values) if len(bundle_sum_values) > 0 else 100
+    prices = np.linspace(0, max_val, 50)
     demand = []
     
-    for bp in price_points:
-        surplus_indiv = np.sum(np.maximum(wtp_matrix - indiv_prices, 0), axis=1)
-        surplus_bundle = bundle_sum_values - bp
-        buy_bundle = (surplus_bundle >= surplus_indiv) & (surplus_bundle >= 0)
+    for p in prices:
+        s_indiv = np.sum(np.maximum(wtp_matrix - indiv_prices, 0), axis=1)
+        s_bundle = bundle_sum_values - p
+        buy_bundle = (s_bundle >= s_indiv) & (s_bundle >= 0)
         demand.append(np.sum(buy_bundle))
         
-    return pd.DataFrame({"Price": price_points, "Demand": demand})
+    return pd.DataFrame({"Price": prices, "Demand": demand})
 
 # --- MAIN APP ---
-
 def main():
-    st.title("Dynamic Pricing Optimization Engine")
-    st.markdown("Upload your dataset (Product WTPs) to auto-generate optimal bundling strategies.")
-
-    # 0. Data Input
     with st.sidebar:
-        st.header("Controls")
-        uploaded_file = st.file_uploader("Upload WTP CSV", type=["csv"])
+        st.image("https://cdn-icons-png.flaticon.com/512/4149/4149665.png", width=50)
+        st.title("Pricing Controls")
+        st.markdown("### 📂 Upload Data")
+        sidebar_file = st.file_uploader("Upload File (CSV or Excel)", type=['csv', 'xlsx', 'xls'], key="sidebar_uploader")
+        st.markdown("---")
+        st.info("Auto-Cleaner Active: Text columns are ignored. Missing values are treated as 0.")
+
+    st.title("🎯 Pricing Strategy Optimizer")
+    st.markdown("Dynamic Mixed-Bundling Simulation & Analytics")
     
+    uploaded_file = sidebar_file
+    if uploaded_file is None:
+        st.warning("⚠️ Using Default Data (Dheeraj.csv). Upload your own file to change analysis.")
+        
     df = load_data(uploaded_file)
-    products = df.columns.tolist()
     
-    if st.button("Run Optimization Solver") or uploaded_file is None:
-        with st.spinner("Running Differential Evolution Solver... Analyzing Customer WTPs..."):
-            # Run Calculations
+    if df is not None and not df.empty:
+        products = df.columns.tolist()
+
+        with st.spinner("Running AI Solver... Finding optimal price anchors..."):
             baseline_rev = calculate_baseline(df, products)
-            opt_prices, max_rev = solve_pricing(df, products)
-            customer_df = get_customer_breakdown(df, products, opt_prices)
+            opt_prices, max_rev = run_solver(df, products)
+            cust_df = get_customer_details(df, products, opt_prices)
             
-            total_surplus = customer_df['Consumer Surplus'].sum()
-            uplift = ((max_rev - baseline_rev) / baseline_rev) * 100
+            total_surplus = cust_df['Surplus'].sum()
+            # Prevent divide by zero if baseline is 0
+            uplift = ((max_rev - baseline_rev) / baseline_rev) * 100 if baseline_rev > 0 else 0
             
-            # Calculate Stats for AI Insights
             bundle_price = opt_prices[-1]
-            sum_indiv_opt = np.sum(opt_prices[:-1])
-            discount = ((sum_indiv_opt - bundle_price) / sum_indiv_opt) * 100
-            bundle_adoption = (len(customer_df[customer_df['Decision'] == 'Bundle']) / len(df)) * 100
-            
-            # --- SECTION 1: METRICS ---
-            st.markdown("### 1. Financial Overview")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(f"""
-                <div class="metric-box">
-                    <div class="metric-label">Total Revenue (Optimized)</div>
-                    <div class="metric-value">₹{max_rev:,.0f}</div>
-                    <div class="metric-delta positive">▲ {uplift:.1f}% vs Separate</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with c2:
-                 st.markdown(f"""
-                <div class="metric-box" style="border-left-color: #22c55e;">
-                    <div class="metric-label">Consumer Surplus</div>
-                    <div class="metric-value">₹{total_surplus:,.0f}</div>
-                    <div class="metric-delta" style="color:#64748b;">Value Retained by Users</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with c3:
-                 st.markdown(f"""
-                <div class="metric-box" style="border-left-color: #f59e0b;">
-                    <div class="metric-label">Bundle Adoption</div>
-                    <div class="metric-value">{bundle_adoption:.0f}%</div>
-                    <div class="metric-delta" style="color:#64748b;">Conversion Rate</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.write("---")
+            indiv_sum = np.sum(opt_prices[:-1])
+            # Prevent divide by zero
+            discount = ((indiv_sum - bundle_price) / indiv_sum) * 100 if indiv_sum > 0 else 0
+            bundle_adoption = len(cust_df[cust_df['Decision'] == 'Bundle'])
 
-            # --- SECTION 2: SPLIT VIEW (AI & Customers) ---
-            c_left, c_right = st.columns([1, 2])
+        # KPIS
+        st.markdown("### 1. Financial Performance")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(f"""
+            <div class="metric-container">
+                <div class="metric-label">Optimized Revenue</div>
+                <div class="metric-value">₹{max_rev:,.0f}</div>
+                <div class="metric-sub">▲ {uplift:.1f}% Uplift (vs Linear)</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"""
+            <div class="metric-container" style="border-left-color: #16a34a;">
+                <div class="metric-label">Consumer Surplus</div>
+                <div class="metric-value">₹{total_surplus:,.0f}</div>
+                <div class="metric-sub" style="color:#64748b;">Customer Value Retained</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
+            <div class="metric-container" style="border-left-color: #f59e0b;">
+                <div class="metric-label">Bundle Conversion</div>
+                <div class="metric-value">{bundle_adoption}/{len(df)}</div>
+                <div class="metric-sub" style="color:#64748b;">Customers Choosing Bundle</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.write("---")
+
+        # INSIGHTS
+        col_left, col_right = st.columns([1, 2])
+        with col_left:
+            st.subheader("💡 Strategic Recommendations")
+            rec_text = "High Anchor Pricing" if discount > 15 else "Value Bundling"
             
-            with c_left:
-                st.subheader("2. AI Strategic Insights")
-                
-                # Dynamic Text Generation based on stats
-                strategy_text = "Volume Driver" if discount > 15 else "Premium Extraction"
-                marketing_focus = "Value-for-Money" if discount > 15 else "Exclusivity & Convenience"
-                
-                st.markdown(f"""
-                <div class="insight-card">
-                    <div class="recommendation">
-                        <strong>🎯 Pricing Strategy: {strategy_text}</strong><br>
-                        The solver suggests a <strong>{discount:.1f}% discount</strong> on the bundle. 
-                        Individual prices are set high to act as anchors, making the bundle price of 
-                        <strong>₹{bundle_price:,.0f}</strong> the rational choice for most buyers.
-                    </div>
-                    <div class="recommendation" style="border-left-color: #ec4899;">
-                        <strong>📢 Marketing Angle: {marketing_focus}</strong><br>
-                        Focus marketing on the "Total Ecosystem Savings". 
-                        Highlight that buying the bundle saves <strong>₹{(sum_indiv_opt - bundle_price):,.0f}</strong> 
-                        compared to individual items.
-                    </div>
-                    <div class="recommendation" style="border-left-color: #f59e0b;">
-                        <strong>📉 Competitor Analysis</strong><br>
-                        Your optimal bundle price effectively prices each item at 
-                        <strong>₹{(bundle_price/len(products)):,.0f}</strong> avg. 
-                        Use this unit metric to undercut single-product competitors.
-                    </div>
+            # Avoid division by zero for products length
+            unit_price = bundle_price/len(products) if len(products) > 0 else 0
+            
+            st.markdown(f"""
+            <div class="insight-card">
+                <div class="recommendation-box">
+                    <strong>Strategy: {rec_text}</strong><br>
+                    The AI recommends a <strong>{discount:.1f}% discount</strong> on the bundle. 
+                    Individual prices are set high to "anchor" value perception.
                 </div>
-                """, unsafe_allow_html=True)
-                
-            with c_right:
-                st.subheader("Customer Purchase Decisions")
-                st.dataframe(
-                    customer_df,
-                    column_config={
-                        "Customer ID": st.column_config.NumberColumn(format="#%d"),
-                        "Revenue": st.column_config.NumberColumn(format="₹%d"),
-                        "Consumer Surplus": st.column_config.ProgressColumn(
-                            format="₹%d",
-                            min_value=0,
-                            max_value=int(customer_df['Consumer Surplus'].max()),
-                        ),
-                        "Decision": st.column_config.TextColumn(),
-                    },
-                    use_container_width=True,
-                    height=350,
-                    hide_index=True
-                )
-
-            st.write("---")
-
-            # --- SECTION 3: PRICING MIXES ---
-            st.subheader("3. Optimal Pricing Mix")
-            st.markdown("The solver calculated these price points to maximize total revenue:")
-            
-            cols = st.columns(len(products) + 1)
-            
-            # Individual Prices
-            for i, prod in enumerate(products):
-                p_opt = opt_prices[i]
-                with cols[i]:
-                    st.markdown(f"""
-                    <div class="price-card">
-                        <div class="price-title">{prod}</div>
-                        <div class="price-tag">₹{p_opt:,.0f}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Bundle Price
-            with cols[-1]:
-                st.markdown(f"""
-                <div class="price-card bundle-highlight">
-                    <div class="price-title">ALL-IN BUNDLE</div>
-                    <div class="price-tag">₹{bundle_price:,.0f}</div>
+                <div class="recommendation-box" style="border-left-color: #ec4899; background-color: #fdf2f8;">
+                    <strong>Marketing Angle</strong><br>
+                    Highlight the savings of <strong>₹{(indiv_sum - bundle_price):,.0f}</strong> compared to buying items separately.
                 </div>
-                """, unsafe_allow_html=True)
+                <div class="recommendation-box" style="border-left-color: #f59e0b; background-color: #fffbeb;">
+                    <strong>Competitive Edge</strong><br>
+                    Effective unit price is <strong>₹{unit_price:,.0f}</strong> per item.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-            st.write("---")
-
-            # --- SECTION 4: DEMAND CURVE ---
-            st.subheader("4. Bundle Demand Sensitivity")
-            
-            demand_data = generate_demand_curve(df, products, opt_prices)
-            
-            fig = px.line(
-                demand_data, x="Price", y="Demand",
-                title="Projected Bundle Sales at Different Price Points",
-                labels={"Price": "Bundle Price (₹)", "Demand": "Number of Buyers"}
+        with col_right:
+            st.subheader("👥 Customer Purchase Breakdown")
+            st.dataframe(
+                cust_df,
+                column_config={
+                    "Revenue": st.column_config.NumberColumn(format="₹%d"),
+                    "Surplus": st.column_config.ProgressColumn(format="₹%d", min_value=0, max_value=int(cust_df['Surplus'].max()) if not cust_df.empty else 100),
+                    "Decision": st.column_config.TextColumn(),
+                },
+                use_container_width=True,
+                height=380,
+                hide_index=True
             )
-            
-            # Add vertical line for optimal price
-            fig.add_vline(x=bundle_price, line_dash="dash", line_color="green", annotation_text="Optimal Price")
-            fig.update_layout(height=400, hovermode="x unified")
-            fig.update_traces(line_color='#3b82f6', fill='tozeroy', fillcolor='rgba(59, 130, 246, 0.1)')
-            
-            st.plotly_chart(fig, use_container_width=True)
+
+        st.write("---")
+
+        # PRICING
+        st.subheader("🏷️ Optimal Pricing Mix")
+        cols = st.columns(len(products) + 1)
+        for i, prod in enumerate(products):
+            p_val = opt_prices[i]
+            name = str(prod).replace("Samsung_", "").replace("_", " ")
+            with cols[i]:
+                st.markdown(f"""
+                <div class="price-card">
+                    <div class="price-title">{name}</div>
+                    <div class="price-val">₹{p_val:,.0f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+        with cols[-1]:
+            st.markdown(f"""
+            <div class="price-card bundle-highlight">
+                <div class="price-title">ALL-IN BUNDLE</div>
+                <div class="price-val">₹{bundle_price:,.0f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.write("---")
+
+        # DEMAND CURVE
+        st.subheader("📉 Bundle Demand Sensitivity")
+        demand_data = generate_demand_data(df, products, opt_prices)
+        fig = px.line(demand_data, x="Price", y="Demand", 
+                      labels={"Price": "Bundle Price (₹)", "Demand": "Number of Buyers"})
+        fig.add_vline(x=bundle_price, line_dash="dash", line_color="green", annotation_text="Optimal Price")
+        fig.update_traces(line_color="#3b82f6", fill="tozeroy", fillcolor="rgba(59, 130, 246, 0.1)")
+        fig.update_layout(height=400, hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
+        
+    else:
+        st.error("Unable to read data. Ensure your file has columns with Willingness-To-Pay numbers.")
 
 if __name__ == "__main__":
     main()
